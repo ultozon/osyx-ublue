@@ -1,0 +1,12 @@
+[Unit]
+Description=osyx per-user setup (first login)
+# Not for system accounts such as the sddm greeter user.
+ConditionUser=!@system
+ConditionPathExists=!%h/.local/state/osyx/user-setup.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/osyx-user-setup
+
+[Install]
+WantedBy=default.target

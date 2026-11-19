@@ -1,0 +1,6 @@
+# bootc-image-builder customizations for the test VM. Not for real installs:
+# the password is public.
+[[customizations.user]]
+name = "tester"
+password = "tester"
+groups = ["wheel"]

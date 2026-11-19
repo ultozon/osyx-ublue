@@ -1,0 +1,117 @@
+# osyx on Universal Blue (Fedora Atomic / bootc) with NVIDIA drivers.
+#
+# Build from the repository root so in-tree packages and configs are in context.
+# Submodules must be checked out first:
+#   git submodule update --init packages/thyx packages/asryx packages/lookas
+#   podman build -f images/ublue-nvidia/Containerfile -t localhost/osyx-nvidia:latest .
+
+ARG FEDORA_VERSION=44
+ARG BASE_IMAGE=ghcr.io/ublue-os/base-nvidia
+
+# ---------------------------------------------------------------------------
+# Stage 1: compile the Rust tools. Built on an older glibc than Fedora ships,
+# so the binaries run unchanged in the final image.
+# ---------------------------------------------------------------------------
+FROM docker.io/library/rust:1-slim-trixie AS rust-builder
+
+# lookas captures audio through cpal -> alsa-sys.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libasound2-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY packages/totpyx packages/totpyx
+COPY packages/netkit packages/netkit
+COPY packages/lookas packages/lookas
+
+RUN cargo install --locked --path packages/totpyx --root /out \
+ && cargo install --locked --path packages/netkit --root /out \
+ && cargo install --locked --path packages/lookas --root /out
+
+# ---------------------------------------------------------------------------
+# Stage 2: asryx (C++ / whisper.cpp). Built on the same Fedora release as the
+# final image so libstdc++ matches.
+# ---------------------------------------------------------------------------
+FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION} AS cpp-builder
+
+RUN dnf5 -y install --setopt=install_weak_deps=False git cmake ninja-build gcc-c++
+
+COPY packages/asryx /src/asryx
+
+# asryx's CMakeLists expects whisper.cpp at $HOME/.local/opt/whisper.cpp.
+# GGML_NATIVE=OFF: don't tune for the build host's CPU (the image runs
+# elsewhere). ggml then targets x86-64 with AVX2/FMA/F16C.
+ENV HOME=/build
+RUN set -eux; \
+    sha="$(tr -d '[:space:]' < /src/asryx/versions/whisper-cpp-sha)"; \
+    wdir="$HOME/.local/opt/whisper.cpp"; \
+    git init -q "$wdir"; \
+    git -C "$wdir" remote add origin https://github.com/ggml-org/whisper.cpp.git; \
+    git -C "$wdir" fetch -q --depth 1 origin "$sha"; \
+    git -C "$wdir" checkout -q --detach FETCH_HEAD; \
+    git -C "$wdir" submodule update --init --recursive; \
+    cmake --preset release -S /src/asryx -DGGML_NATIVE=OFF; \
+    cmake --build /src/asryx/build/release --target asryx; \
+    install -Dm0755 /src/asryx/build/release/asryx /out/bin/asryx; \
+    install -Dm0644 /src/asryx/versions/whisper-cpp-sha /out/share/asryx/whisper-cpp-sha
+
+# ---------------------------------------------------------------------------
+# Stage 3: shell framework the osyx zsh config sources ($ZSH=~/.oh-my-zsh).
+# ---------------------------------------------------------------------------
+FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION} AS omz
+
+RUN dnf5 -y install --setopt=install_weak_deps=False git \
+ && git clone -q --depth 1 https://github.com/ohmyzsh/ohmyzsh /omz \
+ && for p in zsh-autosuggestions zsh-syntax-highlighting zsh-completions; do \
+      git clone -q --depth 1 "https://github.com/zsh-users/$p" "/omz/custom/plugins/$p"; \
+    done \
+ && find /omz -name .git -prune -exec rm -rf {} +
+
+# ---------------------------------------------------------------------------
+# Stage 4: osyx fonts (Inter, Iosevka Fixed SS18, Meslo Nerd Font), the same
+# release asset provisioning/setup/display/enable-fonts.sh installs per user.
+# ---------------------------------------------------------------------------
+FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION} AS fonts
+
+ARG FONTS_VERSION=fonts-v1.0.0
+ARG FONTS_SHA256=a1df57ae6fdb160b8ec73d5363d7a0a5de06a603d7511a6d2c8763e09ae04d5f
+
+RUN curl -fsSL --retry 3 -o /fonts.tar.gz \
+      "https://github.com/rccyx/osyx/releases/download/${FONTS_VERSION}/${FONTS_VERSION}.tar.gz" \
+ && echo "${FONTS_SHA256}  /fonts.tar.gz" | sha256sum -c - \
+ && mkdir -p /out \
+ && tar -xzf /fonts.tar.gz -C /out --no-same-owner \
+ && chmod -R u=rwX,go=rX /out
+
+# ---------------------------------------------------------------------------
+# Stage 5: osyx payload that only needs copying (configs, QML apps, themes).
+# ---------------------------------------------------------------------------
+FROM scratch AS payload
+
+COPY config /usr/share/osyx/config
+COPY packages/powyx /usr/share/osyx/powyx
+COPY packages/flavors /usr/share/osyx/flavors
+COPY --from=omz /omz /usr/share/osyx/oh-my-zsh
+
+# Same file set thyx's own installer stages (scripts/lib/_theme.sh).
+COPY --exclude=.git --exclude=.github --exclude=assets --exclude=fonts \
+     --exclude=**/README.md --exclude=.qmllint.ini \
+     packages/thyx /usr/share/sddm/themes/thyx
+COPY packages/thyx/fonts /usr/share/fonts/thyx
+COPY --from=fonts /out /usr/share/fonts/osyx
+
+# ---------------------------------------------------------------------------
+# Stage 6: the bootable image.
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE}:${FEDORA_VERSION}
+
+COPY --from=rust-builder /out/bin/ /usr/bin/
+COPY --from=cpp-builder /out/ /usr/
+COPY --from=payload /usr/share /usr/share
+COPY images/ublue-nvidia/files/ /
+
+RUN --mount=type=bind,source=images/ublue-nvidia/build.sh,target=/tmp/build.sh \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    bash /tmp/build.sh
+
+RUN bootc container lint

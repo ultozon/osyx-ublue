@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Per-user part of osyx that cannot live in the read-only image.
+#
+#   osyx-user-setup                  first-login setup: powyx, asryx models; once
+#   osyx-user-setup --dotfiles       also copy osyx configs and the home layout
+#                                    (oh-my-zsh, flavors, links) into $HOME,
+#                                    without overwriting existing files
+#   osyx-user-setup --force          rerun even if already done
+#   osyx-user-setup --populate DIR   only lay out the home skeleton in DIR
+#                                    (used at image build for /etc/skel)
+set -euo pipefail
+
+SHARE=/usr/share/osyx
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/osyx"
+MARKER="$STATE_DIR/user-setup.done"
+
+ASRYX_MODEL=base.en
+ASRYX_VAD=ggml-silero-v6.2.0.bin
+ASRYX_MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${ASRYX_MODEL}.bin"
+ASRYX_VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/${ASRYX_VAD}"
+
+log() { printf '[osyx-user-setup] %s\n' "$*"; }
+
+# Files every osyx home needs that aren't plain dotfiles. Never overwrites.
+populate() {
+  local home="$1"
+
+  # config/.zshrc sources $HOME/.oh-my-zsh/oh-my-zsh.sh. Copied, not linked:
+  # oh-my-zsh writes its cache and custom files inside $ZSH.
+  [[ -e "$home/.oh-my-zsh" ]] || cp -a "$SHARE/oh-my-zsh" "$home/.oh-my-zsh"
+
+  # flavors must live in ~/flavors: generate.py derives $HOME from its own
+  # (symlink-resolved) path and writes theme-names.toml next to itself.
+  # Only the large, read-only backgrounds are shared with the image.
+  if [[ ! -e "$home/flavors" ]]; then
+    mkdir -p "$home/flavors"
+    local entry
+    for entry in "$SHARE/flavors"/*; do
+      [[ "${entry##*/}" == backgrounds ]] && continue
+      cp -a "$entry" "$home/flavors/"
+    done
+    ln -s "$SHARE/flavors/backgrounds" "$home/flavors/backgrounds"
+  fi
+
+  # The Hyprland keybind runs ~/.local/bin/asryx.
+  mkdir -p "$home/.local/bin"
+  [[ -e "$home/.local/bin/asryx" ]] || ln -s /usr/bin/asryx "$home/.local/bin/asryx"
+
+  apply_default_theme "$home"
+}
+
+# Gives a fresh home one consistent flavors theme (colors + wallpaper). The
+# shipped config/ colors match no palette, and waypaper --restore (Hyprland
+# autostart) has nothing to restore until a wallpaper is recorded.
+# Skipped once the user has a theme; switch later with ALT+R or `themes`.
+apply_default_theme() {
+  local home="$1" theme="${OSYX_DEFAULT_THEME:-gilded}"
+  [[ -e "$home/.cache/theme.current" ]] && return 0
+
+  # generate.py writes relative to its own location, i.e. into $home.
+  python3 "$home/flavors/generate.py" "$theme" >/dev/null
+  mkdir -p "$home/.cache"
+  printf '%s\n' "$theme" >"$home/.cache/theme.current"
+
+  local wallpaper ext waypaper="$home/.config/waypaper/config.ini"
+  for ext in jpg png jpeg webp; do
+    [[ -f "$SHARE/flavors/backgrounds/$theme.$ext" ]] || continue
+    wallpaper="$SHARE/flavors/backgrounds/$theme.$ext"
+    break
+  done
+  if [[ -n "${wallpaper:-}" && -f "$waypaper" ]] && ! grep -q '^wallpaper *=' "$waypaper"; then
+    sed -i "/^\[Settings\]/a wallpaper = $wallpaper" "$waypaper"
+  fi
+}
+
+fetch() {
+  local url="$1" target="$2"
+  [[ -s "$target" ]] && return 0
+  curl -fL --retry 3 --silent --show-error -o "$target.part" "$url"
+  mv -f "$target.part" "$target"
+}
+
+# Models are per user (~/.local/share/asryx). asryx's own `--model install`
+# needs a whisper.cpp checkout in $HOME, so fetch the default model directly.
+setup_asryx() {
+  local data="$HOME/.local/share/asryx"
+  mkdir -p "$data/versions"
+  cp -f /usr/share/asryx/whisper-cpp-sha "$data/versions/whisper-cpp-sha"
+  [[ -e "$HOME/.asryx.conf" ]] \
+    || printf 'model=%s\nlanguage=auto\npipe_to=\n' "$ASRYX_MODEL" >"$HOME/.asryx.conf"
+  fetch "$ASRYX_VAD_URL" "$data/$ASRYX_VAD"
+  fetch "$ASRYX_MODEL_URL" "$data/ggml-${ASRYX_MODEL}.bin"
+}
+
+dotfiles=false
+force=false
+while (($#)); do
+  case "$1" in
+    --dotfiles) dotfiles=true ;;
+    --force) force=true ;;
+    --populate)
+      [[ $# -ge 2 ]] || { printf 'usage: %s --populate DIR\n' "$0" >&2; exit 2; }
+      populate "$2"
+      exit 0
+      ;;
+    *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ -f "$MARKER" && "$force" == false && "$dotfiles" == false ]]; then
+  exit 0
+fi
+
+if [[ "$dotfiles" == true ]]; then
+  # New users already get these via /etc/skel; this is for existing accounts.
+  cp -a --update=none "$SHARE/config/." "$HOME/"
+  rm -f "$HOME/_install_"
+  populate "$HOME"
+fi
+
+# powyx installs into ~/.local; dependencies are already in the image.
+bash "$SHARE/powyx/package/install" --no-install-deps
+
+# Network may not be up yet on first login. Leave the marker unset so the
+# next login retries.
+if ! setup_asryx; then
+  log "asryx model download failed; will retry on next login"
+  exit 1
+fi
+
+mkdir -p "$STATE_DIR"
+touch "$MARKER"

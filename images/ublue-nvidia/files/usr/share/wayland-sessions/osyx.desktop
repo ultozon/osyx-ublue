@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=osyx
+Comment=Hyprland with the osyx workstation layer
+Exec=/usr/libexec/osyx-session
+Type=Application
+DesktopNames=Hyprland

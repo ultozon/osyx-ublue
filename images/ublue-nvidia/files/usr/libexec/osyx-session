@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# SDDM entry point for the osyx Hyprland session.
+# Sets NVIDIA-specific environment only when the proprietary driver is loaded,
+# so the same image keeps working on Intel/AMD-only machines.
+set -euo pipefail
+
+if [[ -d /sys/module/nvidia_drm ]]; then
+  export LIBVA_DRIVER_NAME=nvidia
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  export NVD_BACKEND=direct
+fi
+
+# start-hyprland runs Hyprland under its watchdog; Hyprland warns when started
+# without it. Arguments after -- go to Hyprland.
+if command -v start-hyprland >/dev/null 2>&1; then
+  exec start-hyprland -- "$@"
+fi
+exec Hyprland "$@"
