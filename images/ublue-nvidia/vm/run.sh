@@ -25,6 +25,7 @@ exec qemu-system-x86_64 \
   -enable-kvm -machine q35 -cpu host -smp "${VM_CPUS:-4}" -m "${VM_MEM:-8G}" \
   -drive file="$DISK",if=virtio,format=qcow2 \
   "${gpu[@]}" \
+  -device qemu-xhci -device usb-tablet \
   -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22 \
   -audiodev pipewire,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0 \
   "$@"

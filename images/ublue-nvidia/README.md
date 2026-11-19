@@ -50,6 +50,19 @@ images/ublue-nvidia/vm/run.sh          # add -snapshot to discard changes
 
 Log in as `tester` / `tester` and pick the **osyx** session.
 
+## Installer ISO
+
+```sh
+images/ublue-nvidia/iso/build-iso.sh   # sudo; writes iso/output/bootiso/osyx-install.iso
+images/ublue-nvidia/iso/test-iso.sh    # try it in a UEFI VM with an empty disk first
+```
+
+bootc-image-builder's ISO is unattended and wipes every disk (`clearpart --all`).
+`build-iso.sh` replaces its kickstart with `iso/osyx.ks`, so the installer
+asks for the disk, your user, language and time zone. Tick "Make this user
+administrator" to get sudo. Installed systems track
+`ghcr.io/ultozon/osyx-ublue:latest` for `bootc upgrade`.
+
 ## Use
 
 Switch an existing Fedora Atomic / ublue NVIDIA install to the local image:
