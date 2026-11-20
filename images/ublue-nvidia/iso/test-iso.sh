@@ -28,7 +28,7 @@ exec qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_DIR/OVMF_CODE.4m.fd" \
   -drive if=pflash,format=raw,file="$VARS" \
   -drive file="$DISK",if=virtio,format=qcow2 \
-  -device virtio-vga -display gtk \
+  -device virtio-vga -display gtk,show-cursor=on \
   -device qemu-xhci -device usb-tablet \
   -nic user,model=virtio-net-pci \
   -monitor unix:"$HERE/output/monitor.sock",server,nowait \

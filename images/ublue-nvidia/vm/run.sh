@@ -16,9 +16,9 @@ DISK="$HERE/output/qcow2/disk.qcow2"
 [[ -f "$DISK" ]] || { echo "no disk at $DISK, run build-disk.sh first" >&2; exit 1; }
 
 if [[ "${VM_GL:-0}" == 1 ]]; then
-  gpu=(-device virtio-vga-gl -display gtk,gl=on)
+  gpu=(-device virtio-vga-gl -display gtk,gl=on,show-cursor=on)
 else
-  gpu=(-device virtio-vga -display gtk)
+  gpu=(-device virtio-vga -display gtk,show-cursor=on)
 fi
 
 exec qemu-system-x86_64 \
