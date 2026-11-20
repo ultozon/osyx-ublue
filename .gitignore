@@ -45,3 +45,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# cosign private key for the ublue image (lives in ~/.config/osyx-ublue)
+cosign.key

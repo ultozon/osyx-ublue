@@ -7,5 +7,6 @@ ostreecontainer --url=/run/install/repo/container --transport=oci
 %post --erroronfail
 set -e
 # Track the published image for `bootc upgrade` instead of the local build ref.
-bootc switch --mutate-in-place --transport registry ghcr.io/ultozon/osyx-ublue:latest
+# The image ref below is filled in by build-iso.sh (osyx-ublue or osyx-ublue-nvidia).
+bootc switch --mutate-in-place --transport registry @TARGET@
 %end

@@ -1,7 +1,8 @@
 > [!NOTE]
 > **osyx-ublue** is a fork of [rccyx/osyx](https://github.com/rccyx/osyx) that packages osyx as a
-> [Universal Blue](https://universal-blue.org) bootc image: Fedora Atomic with NVIDIA drivers
-> ([`ghcr.io/ublue-os/base-nvidia`](https://github.com/ublue-os/main)) instead of the Debian bootstrap.
+> [Universal Blue](https://universal-blue.org) bootc image: Fedora Atomic
+> ([`ublue-os/main`](https://github.com/ublue-os/main)) instead of the Debian bootstrap, in two variants:
+> `ghcr.io/ultozon/osyx-ublue` for AMD/Intel graphics and `ghcr.io/ultozon/osyx-ublue-nvidia` for NVIDIA.
 > The image lives in [`images/ublue-nvidia/`](images/ublue-nvidia/); see its README for building,
 > testing in a VM and installing. Everything below is the upstream osyx README.
 > This fork is not affiliated with the upstream project or with Universal Blue.

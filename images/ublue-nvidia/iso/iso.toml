@@ -6,8 +6,9 @@
 # choose the target disk, create your user (tick "Make this user
 # administrator" for sudo), and set language, keyboard and time zone.
 #
-# The installed system tracks ghcr.io/ultozon/osyx-ublue:latest (set in
-# osyx.ks), so `bootc upgrade` works once the image is published there.
+# The installed system tracks ghcr.io/ultozon/osyx-ublue-nvidia:latest or,
+# with VARIANT=main, ghcr.io/ultozon/osyx-ublue:latest (osyx.ks, filled in by
+# build-iso.sh), so `bootc upgrade` works once the image is published there.
 
 [customizations.installer.modules]
 enable = [

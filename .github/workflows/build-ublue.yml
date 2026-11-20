@@ -1,0 +1,170 @@
+---
+# Builds the osyx ublue images (images/ublue-nvidia), rechunks them, pushes
+# them to GHCR and signs them with cosign. Two variants from one Containerfile:
+#   osyx-ublue         ublue-os/base-main    (AMD / Intel graphics)
+#   osyx-ublue-nvidia  ublue-os/base-nvidia  (NVIDIA proprietary driver)
+# Modelled on the ublue-os/image-template build workflow.
+name: Build ublue image
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'images/ublue-nvidia/**'
+      - 'config/**'
+      - 'packages/**'
+      - '.github/workflows/build-ublue.yml'
+  schedule:
+    - cron: '05 10 * * *'  # daily, picks up ublue base image updates
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/README.md'
+  workflow_dispatch:
+
+env:
+  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
+  DEFAULT_TAG: "latest"
+  CONTAINERFILE: "images/ublue-nvidia/Containerfile"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build_push:
+    name: Build and push ${{ matrix.image_name }}
+    runs-on: ubuntu-26.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: osyx-ublue
+            base_image: ghcr.io/ublue-os/base-main
+            description: osyx desktop on Universal Blue (Fedora Atomic, AMD/Intel)
+          - image_name: osyx-ublue-nvidia
+            base_image: ghcr.io/ublue-os/base-nvidia
+            description: osyx desktop on Universal Blue (Fedora Atomic, NVIDIA)
+
+    env:
+      IMAGE_NAME: ${{ matrix.image_name }}
+      BASE_IMAGE: ${{ matrix.base_image }}
+      IMAGE_DESCRIPTION: ${{ matrix.description }}
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Only the submodules the image uses. ctrlyx is not publicly reachable,
+      # so `submodules: true` on checkout would fail.
+      - name: Checkout submodules
+        run: git submodule update --init --depth 1 packages/thyx packages/asryx packages/lookas
+
+      - name: Maximize build space
+        uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
+
+      - name: Prepare environment
+        run: |
+          # Lowercase the image uri https://github.com/macbre/push-to-ghcr/issues/12
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> "${GITHUB_ENV}"
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "${GITHUB_ENV}"
+
+      - name: Build image
+        run: |
+          set -euxo pipefail
+          sha="$(git rev-parse --short HEAD)"
+          repo="https://github.com/${GITHUB_REPOSITORY}"
+          podman build --pull=newer \
+            --file "${CONTAINERFILE}" \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            --tag "${IMAGE_NAME}:${DEFAULT_TAG}" \
+            --label "org.opencontainers.image.title=${IMAGE_NAME}" \
+            --label "org.opencontainers.image.description=${IMAGE_DESCRIPTION}" \
+            --label "org.opencontainers.image.source=${repo}" \
+            --label "org.opencontainers.image.url=${repo}/tree/${sha}/images/ublue-nvidia" \
+            --label "org.opencontainers.image.documentation=${repo}/blob/${sha}/images/ublue-nvidia/README.md" \
+            --label "org.opencontainers.image.version=${DEFAULT_TAG}.$(date +%Y%m%d)-${sha}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label "org.opencontainers.image.vendor=${GITHUB_REPOSITORY_OWNER}" \
+            .
+
+      # Smaller delta updates for `bootc upgrade` (rpm-ostree chunking, as in
+      # the image-template's `just ostree-rechunk`).
+      - name: Rechunk with rpm-ostree
+        run: |
+          set -euxo pipefail
+          graphroot="$(podman info --format '{{.Store.GraphRoot}}')"
+          podman run --rm --pull=never --privileged \
+            --mount=type=image,src="${IMAGE_NAME}:${DEFAULT_TAG}",target=/rpm-ostree \
+            --mount=type=bind,src="${graphroot}",target=/run/host-container-storage,rw \
+            --mount=type=tmpfs,target=/run/rpm-ostree-storage \
+            --entrypoint /usr/bin/rpm-ostree \
+            "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" \
+            compose build-chunked-oci \
+            --max-layers 127 \
+            --format-version=2 \
+            --bootc \
+            --rootfs /rpm-ostree \
+            --output "containers-storage:[overlay@/run/host-container-storage+/run/rpm-ostree-storage]localhost/${IMAGE_NAME}:${DEFAULT_TAG}"
+
+      - name: Tag image
+        id: tags
+        run: |
+          set -euxo pipefail
+          date="$(date +%Y%m%d)"
+          sha="$(git rev-parse --short HEAD)"
+          tags="${DEFAULT_TAG} ${DEFAULT_TAG}-${date} ${date} ${date}-${sha}"
+          for tag in ${tags}; do
+            podman tag "${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_NAME}:${tag}"
+          done
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+
+      # Pull requests only build; publishing happens from the default branch.
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR
+        id: push
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euxo pipefail
+          for tag in ${TAGS}; do
+            podman push --digestfile=/tmp/digestfile "${IMAGE_NAME}:${tag}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}"
+          done
+          echo "digest=$(< /tmp/digestfile)" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        with:
+          cosign-release: 'v3.1.2'
+
+      # Needs the repository secret SIGNING_SECRET (contents of cosign.key).
+      # The matching public key is cosign.pub in the repository root.
+      - name: Sign image
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          COSIGN_EXPERIMENTAL: false
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          # Old bundle format so rpm-ostree/bootc can verify signatures from cosign 3.x
+          # https://github.com/containers/container-libs/issues/388
+          # https://github.com/coreos/rpm-ostree/issues/5509
+          cosign sign -y --new-bundle-format=false --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"

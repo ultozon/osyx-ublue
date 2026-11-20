@@ -8,7 +8,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ISO="${ISO:-$HERE/output/bootiso/osyx-install.iso}"
+ISO="${ISO:-$HERE/output/bootiso/osyx-${VARIANT:-nvidia}-install.iso}"
 DISK="$HERE/output/test-disk.qcow2"
 VARS="$HERE/output/test-OVMF_VARS.fd"
 OVMF_DIR=/usr/share/edk2/x64

@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# Builds an interactive Anaconda installer ISO from localhost/osyx-nvidia:latest.
+# Builds an interactive Anaconda installer ISO.
+#
+#   VARIANT=nvidia (default)  localhost/osyx-nvidia:latest -> tracks ghcr.io/ultozon/osyx-ublue-nvidia
+#   VARIANT=main              localhost/osyx-main:latest   -> tracks ghcr.io/ultozon/osyx-ublue (AMD/Intel)
 #
 # bootc-image-builder always writes an unattended kickstart (osbuild.ks:
 # clearpart --all, autopart, reboot), even with the Anaconda modules from
 # iso.toml enabled. That ISO would wipe every disk without asking. So its
 # osbuild.ks is replaced with osyx.ks, which only names the payload; boot
 # setup is replayed unchanged by xorriso. Only the safe ISO is kept:
-#   output/bootiso/osyx-install.iso
+#   output/bootiso/osyx-<variant>-install.iso
 #
 # Needs sudo: bootc-image-builder runs privileged and reads root's storage.
 set -euo pipefail
 
-IMAGE="${IMAGE:-localhost/osyx-nvidia:latest}"
+VARIANT="${VARIANT:-nvidia}"
+case "$VARIANT" in
+  nvidia) TARGET_DEFAULT=ghcr.io/ultozon/osyx-ublue-nvidia:latest ;;
+  main)   TARGET_DEFAULT=ghcr.io/ultozon/osyx-ublue:latest ;;
+  *) echo "VARIANT must be nvidia or main" >&2; exit 1 ;;
+esac
+IMAGE="${IMAGE:-localhost/osyx-$VARIANT:latest}"
+TARGET="${TARGET:-$TARGET_DEFAULT}"
+ISO="osyx-$VARIANT-install.iso"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$HERE/output"
 
@@ -32,21 +43,23 @@ sudo podman run --rm -it --privileged --pull=newer --net=host \
   --type anaconda-iso --use-librepo=True --rootfs btrfs "$IMAGE"
 
 sudo chown -R "$(id -u):$(id -g)" "$OUT"
+sed "s|@TARGET@|$TARGET|" "$HERE/osyx.ks" >"$OUT/osyx.ks"
 
 # Swap in the interactive kickstart (rootless; tools from a Fedora container).
-podman run --rm -v "$HERE:/w:z" -w /w registry.fedoraproject.org/fedora:44 bash -euc '
+podman run --rm -e ISO="$ISO" -v "$OUT:/w:z" -w /w registry.fedoraproject.org/fedora:44 bash -euc '
   dnf5 -y -q install xorriso isomd5sum diffutils >/dev/null
-  rm -f output/bootiso/osyx-install.iso
-  xorriso -indev output/bootiso/install.iso -outdev output/bootiso/osyx-install.iso \
+  rm -f "bootiso/$ISO"
+  xorriso -indev bootiso/install.iso -outdev "bootiso/$ISO" \
     -boot_image any replay -map osyx.ks /osbuild.ks
-  implantisomd5 output/bootiso/osyx-install.iso >/dev/null
-  xorriso -osirrox on -indev output/bootiso/osyx-install.iso \
+  implantisomd5 "bootiso/$ISO" >/dev/null
+  xorriso -osirrox on -indev "bootiso/$ISO" \
     -extract /osbuild.ks /tmp/osbuild.ks 2>/dev/null
   cmp -s osyx.ks /tmp/osbuild.ks || { echo "kickstart swap failed" >&2; exit 1; }
+  grep -q "^bootc switch .* registry [^@]*$" /tmp/osbuild.ks || { echo "target not filled in" >&2; exit 1; }
   if grep -qE "^(clearpart|autopart|zerombr|reboot)" /tmp/osbuild.ks; then
     echo "osbuild.ks still unattended" >&2; exit 1
   fi'
 
 # Never leave the unattended ISO lying around.
 rm -f "$OUT/bootiso/install.iso"
-echo "iso: $OUT/bootiso/osyx-install.iso"
+echo "iso: $OUT/bootiso/$ISO (installs track $TARGET)"

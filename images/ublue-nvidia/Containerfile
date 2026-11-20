@@ -4,6 +4,9 @@
 # Submodules must be checked out first:
 #   git submodule update --init packages/thyx packages/asryx packages/lookas
 #   podman build -f images/ublue-nvidia/Containerfile -t localhost/osyx-nvidia:latest .
+# AMD / Intel variant (no NVIDIA driver):
+#   podman build -f images/ublue-nvidia/Containerfile \
+#     --build-arg BASE_IMAGE=ghcr.io/ublue-os/base-main -t localhost/osyx-main:latest .
 
 ARG FEDORA_VERSION=44
 ARG BASE_IMAGE=ghcr.io/ublue-os/base-nvidia
